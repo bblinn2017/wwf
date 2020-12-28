@@ -6,6 +6,8 @@ import re
 import copy
 import threading
 
+np.random.seed(seed=0)
+
 ROW = 0
 COLUMN = 1
 INVALID = {'TL','TW','DL','DW',None}
@@ -49,7 +51,7 @@ LAYOUT = {
         [8,12],[11,0],[11,7],[11,14],
         [12,6],[12,8],[14,3],[14,11]],
 }
-NUM_THREADS = 5
+NUM_THREADS = 10
 
 class Player:
     def __init__(self,id):
@@ -77,14 +79,20 @@ class Player:
     def pick_move(self,moves):
         return moves[-1]
 
-class OperationThread(threading.Thread):
+class MoveThread(threading.Thread):
 
-    def __init__(self,q,q_lock,r,r_lock):
-        super(OperationThread,self).__init__()
+    def __init__(self,q,q_lock,r,r_lock,m,m_lock,move_func):
+        super(MoveThread,self).__init__()
         self.queue = q
         self.queue_lock = q_lock
-        self.results = r
-        self.results_lock = r_lock
+
+        self.matches = r
+        self.matches_set = set()
+        self.matches_lock = r_lock
+
+        self.moves = m
+        self.moves_lock = m_lock
+        self.move_func = move_func
 
     def run(self):
 
@@ -101,9 +109,29 @@ class OperationThread(threading.Thread):
 
             res = func(*args)
 
-            self.results_lock.acquire()
-            self.results += res
-            self.results_lock.release()
+            self.matches_lock.acquire()
+            for match in res:
+                if match not in self.matches_set:
+                    self.matches.append(match)
+                    self.matches_set.add(match)
+            self.matches_lock.release()
+
+        while True:
+
+            self.matches_lock.acquire()
+            # If queue is empty
+            if len(self.matches) == 0:
+                self.matches_lock.release()
+                break
+
+            match = self.matches.pop(0)
+            self.matches_lock.release()
+
+            res = self.move_func(match)
+
+            self.moves_lock.acquire()
+            self.moves += res
+            self.moves_lock.release()
 
 class Board:
     def __init__(self):
@@ -503,7 +531,15 @@ class Board:
         def __lt__(self,other):
             if self.score != other.score:
                 return self.score < other.score
-            return self.word < other.word
+            if self.word != other.word:
+                return self.word < other.word
+            if self.ordered_tiles != other.ordered_tiles:
+                return self.ordered_tiles < other.ordered_tiles
+            if self.row != other.row:
+                return self.row < other.row
+            if self.column != other.column:
+                return self.column < other.column
+            return self.dir < other.dir
 
     def cross_word_score(self,cross_line,token,idx):
 
@@ -676,12 +712,14 @@ class Board:
 
         # get all possible multi groups on the board
         multi_groups = self.get_board_tile_groups()
-
+        """
         # board empty, different protocol
         args_queue = []
         args_lock = threading.Lock()
-        matches_queue = []
-        matches_lock = threading.Lock()
+        results_queue = []
+        results_lock = threading.Lock()
+        moves = []
+        moves_lock = threading.Lock()
 
         if len(multi_groups) == 0:
             for c in combos:
@@ -702,8 +740,9 @@ class Board:
 
         threads = []
         for i in range(NUM_THREADS):
-            thread = OperationThread(
-                args_queue,args_lock,matches_queue,matches_lock
+            thread = MoveThread(
+                args_queue,args_lock,results_queue,results_lock,
+                moves,moves_lock,self.get_valid_moves
             )
             threads.append(thread)
 
@@ -712,9 +751,9 @@ class Board:
         for thread in threads:
             thread.join()
 
-        matches = matches_queue
-
+        return sorted(set(moves))
         """
+
         matches = []
         if len(multi_groups) == 0:
             for c in combos:
@@ -727,7 +766,6 @@ class Board:
 
                     # get sideways matches
                     matches += self.get_sideways_matches(c,mg)
-        """
 
         # determine if matches fit
         moves = []
@@ -898,8 +936,10 @@ if __name__ == "__main__":
                     return False
         return True
 
+    import time
+    start = time.time()
     while not done:
         actions = game.actions()
         action = actions[-1] if len(actions) > 0 else None
         state, reward, done = game.step(action)
-        print(game.board)
+    print(time.time() - start)
