@@ -6,8 +6,6 @@ import re
 import copy
 from multiprocessing import Process, Manager
 
-np.random.seed(seed=0)
-
 ROW = 0
 COLUMN = 1
 INVALID = {'TL','TW','DL','DW',None}
@@ -81,57 +79,25 @@ class Player:
 
 class MoveProcess(Process):
 
-    def __init__(self,q,q_lock,r,r_lock,m,m_lock,move_func):
+    def __init__(self,queue,moves,moves_func):
         super(MoveProcess,self).__init__()
-        self.queue = q
-        self.queue_lock = q_lock
+        self.queue = queue
+        self.matches = set()
+        self.moves = moves
 
-        self.matches = r
-        self.matches_set = set()
-        self.matches_lock = r_lock
-
-        self.moves = m
-        self.moves_lock = m_lock
-        self.move_func = move_func
+        self.moves_func = moves_func
 
     def run(self):
 
-        while True:
+        for match_func,args in self.queue:
 
-            self.queue_lock.acquire()
-            # If queue is empty
-            if len(self.queue) == 0:
-                self.queue_lock.release()
-                break
+            for match in match_func(*args):
+                self.matches.add(match)
+                
+        for match in self.matches:
 
-            func,args = self.queue.pop(0)
-            self.queue_lock.release()
-
-            res = func(*args)
-
-            self.matches_lock.acquire()
-            for match in res:
-                if match not in self.matches_set:
-                    self.matches.append(match)
-                    self.matches_set.add(match)
-            self.matches_lock.release()
-
-        while True:
-
-            self.matches_lock.acquire()
-            # If queue is empty
-            if len(self.matches) == 0:
-                self.matches_lock.release()
-                break
-
-            match = self.matches.pop(0)
-            self.matches_lock.release()
-
-            res = self.move_func(match)
-
-            self.moves_lock.acquire()
-            self.moves += res
-            self.moves_lock.release()
+            for move in self.moves_func(match):
+                self.moves.append(move)
 
 class Board:
     def __init__(self):
@@ -714,43 +680,46 @@ class Board:
         multi_groups = self.get_board_tile_groups()
 
         # board empty, different protocol
-        with Manager() as manager:
-            args_queue = manager.list()
-            args_lock = manager.Lock()
-            results_queue = manager.list()
-            results_lock = manager.Lock()
-            moves = manager.list()
-            moves_lock = manager.Lock()
-
-            if len(multi_groups) == 0:
+        manager = Manager()
+        args_queue = []
+        if len(multi_groups) == 0:
+            for c in combos:
+                args = (c,[])
+                func = self.get_empty_matches
+                args_queue.append((func,args))
+        # board not empty, find all matches in dictionary
+        else:
+            for mg in multi_groups:
                 for c in combos:
-                    args = (c,[])
-                    func = self.get_empty_matches
+                    args = (c,mg,[])
+                    func = self.get_regular_matches
                     args_queue.append((func,args))
-            # board not empty, find all matches in dictionary
-            else:
-                for mg in multi_groups:
-                    for c in combos:
-                        args = (c,mg,[])
-                        func = self.get_regular_matches
-                        args_queue.append((func,args))
+                    
+                    # get sideways matches
+                    func = self.get_sideways_matches
+                    args_queue.append((func,args))
 
-                        # get sideways matches
-                        func = self.get_sideways_matches
-                        args_queue.append((func,args))
+        processes = []
+        all_moves = []
+        queue_len = len(args_queue) // NUM_PROCESSES + 1
+        for i in range(NUM_PROCESSES):
+            process_moves = manager.list()
+            process_queue = args_queue[queue_len*i : queue_len*(i+1)]
+            
+            process = MoveProcess(
+                process_queue,process_moves,self.get_valid_moves
+            )
 
-            processes = []
-            for i in range(NUM_PROCESSES):
-                process = MoveProcess(
-                    args_queue,args_lock,results_queue,results_lock,
-                    moves,moves_lock,self.get_valid_moves
-                )
-                processes.append(process)
+            all_moves.append(process_moves)
+            processes.append(process)
 
-            for process in processes:
-                process.start()
-            for thread in processes:
-                process.join()
+        moves = []
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join()
+        for process_moves in all_moves:
+            moves += process_moves
 
         return sorted(set(moves))
         """
