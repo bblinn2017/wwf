@@ -49,6 +49,7 @@ LAYOUT = {
         [8,12],[11,0],[11,7],[11,14],
         [12,6],[12,8],[14,3],[14,11]],
 }
+NUM_THREADS = 5
 
 class Player:
     def __init__(self,id):
@@ -78,25 +79,30 @@ class Player:
 
 class OperationThread(threading.Thread):
 
-    def __init__(self,**kwargs):
+    def __init__(self,q,q_lock,r,r_lock):
         super(OperationThread,self).__init__()
-        self.func = kwargs['func']
-        self.queue = kwargs['queue']
-        self.queue_lock = kwargs['queue_lock']
-        self.results = kwargs['results']
-        self.results_lock = kwargs['results_lock']
+        self.queue = q
+        self.queue_lock = q_lock
+        self.results = r
+        self.results_lock = r_lock
 
     def run(self):
 
-        while self.queue.qsize() > 0:
+        while True:
+
             self.queue_lock.acquire()
-            args = self.queue.get()
+            # If queue is empty
+            if len(self.queue) == 0:
+                self.queue_lock.release()
+                break
+
+            func,args = self.queue.pop(0)
             self.queue_lock.release()
 
-            res = self.func(args)
+            res = func(*args)
 
             self.results_lock.acquire()
-            self.results.put(res)
+            self.results += res
             self.results_lock.release()
 
 class Board:
@@ -255,6 +261,9 @@ class Board:
 
     def get_empty_matches(self,tiles,star=[]):
 
+        if len(tiles+star) == 1:
+            return []
+
         if STAR in tiles:
             count = tiles.count(STAR)
             tiles_wo_star = list(filter(lambda a: a != STAR, tiles))
@@ -270,9 +279,6 @@ class Board:
             for item in combos:
                 star_matches += self.get_empty_matches(tiles_wo_star,list(item))
             return star_matches
-
-        if len(tiles) == 1:
-            return []
 
         sort_string = ''.join(sorted(tiles))
         if sort_string not in self.dictionary:
@@ -431,7 +437,7 @@ class Board:
 
         return matches
 
-    def get_matches(self,tiles,mg,star=[]):
+    def get_regular_matches(self,tiles,mg,star=[]):
 
         string = list(mg.string)
         compiled = list(filter(lambda a: a != SPACE, string))
@@ -455,7 +461,7 @@ class Board:
 
             star_matches = []
             for item in combos:
-                star_matches += self.get_matches(tiles_wo_star,mg,list(item))
+                star_matches += self.get_regular_matches(tiles_wo_star,mg,list(item))
             return star_matches
 
         # check for dictionary matches
@@ -672,6 +678,43 @@ class Board:
         multi_groups = self.get_board_tile_groups()
 
         # board empty, different protocol
+        args_queue = []
+        args_lock = threading.Lock()
+        matches_queue = []
+        matches_lock = threading.Lock()
+
+        if len(multi_groups) == 0:
+            for c in combos:
+                args = (c,[])
+                func = self.get_empty_matches
+                args_queue.append((func,args))
+        # board not empty, find all matches in dictionary
+        else:
+            for mg in multi_groups:
+                for c in combos:
+                    args = (c,mg,[])
+                    func = self.get_regular_matches
+                    args_queue.append((func,args))
+
+                    # get sideways matches
+                    func = self.get_sideways_matches
+                    args_queue.append((func,args))
+
+        threads = []
+        for i in range(NUM_THREADS):
+            thread = OperationThread(
+                args_queue,args_lock,matches_queue,matches_lock
+            )
+            threads.append(thread)
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        matches = matches_queue
+
+        """
         matches = []
         if len(multi_groups) == 0:
             for c in combos:
@@ -680,10 +723,11 @@ class Board:
         else:
             for mg in multi_groups:
                 for c in combos:
-                    matches += self.get_matches(c,mg)
+                    matches += self.get_regular_matches(c,mg)
 
                     # get sideways matches
                     matches += self.get_sideways_matches(c,mg)
+        """
 
         # determine if matches fit
         moves = []
