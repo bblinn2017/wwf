@@ -3,8 +3,11 @@ from torch import nn
 from torch.nn import functional as F
 import numpy as np
 from words_with_friends import Game, get_vocab
+import tqdm
 
-training_iterations = 50
+device = torch.device("cuda")
+
+training_iterations = 100
 
 class SelfAttention(nn.Module):
 
@@ -43,8 +46,9 @@ class WordEncoder(nn.Module):
 
     def forward(self, input):
 
-        emb = self.letter_emb(torch.tensor([self.vocab[x] for x in input]))
-        positions = torch.tensor(np.arange(len(input)))
+        tokenized = torch.tensor([self.vocab[x] for x in input]).to(device)
+        emb = self.letter_emb(tokenized)
+        positions = torch.tensor(np.arange(len(input))).to(device)
         emb_w_pos = emb + self.positional(positions)
         attn = self.word_SA(emb_w_pos)
         return attn.sum(dim = 0)
@@ -60,15 +64,15 @@ class VectorEncoder(nn.Module):
 
     def forward(self,move):
 
-        row = self.row_emb(torch.tensor([move.row])).squeeze()
-        col = self.col_emb(torch.tensor([move.column])).squeeze()
-        dir = self.dir_emb(torch.tensor([move.dir])).squeeze()
+        row = self.row_emb(torch.tensor([move.row]).to(device)).squeeze()
+        col = self.col_emb(torch.tensor([move.column]).to(device)).squeeze()
+        dir = self.dir_emb(torch.tensor([move.dir]).to(device)).squeeze()
 
         return row + col + dir
 
 class MoveEncoder(nn.Module):
 
-    def __init__(self,vocab, in_sz):
+    def __init__(self,vocab, in_sz, move_max):
         super(MoveEncoder, self).__init__()
 
         self.word_enc_sz = in_sz
@@ -77,6 +81,7 @@ class MoveEncoder(nn.Module):
 
         self.word_max = 15
         self.score_max = 100
+        self.move_max = move_max
 
         self.word_enc = WordEncoder(self.word_max, vocab, self.word_enc_sz)
         self.vector_enc = VectorEncoder(self.word_max, self.vector_enc_sz)
@@ -85,28 +90,29 @@ class MoveEncoder(nn.Module):
     def forward(self,moves):
 
         encodings = []
-        for move in moves:
+        for move in moves[-self.move_max:]:
             word = self.word_enc(move.word)
             ordered = self.word_enc(move.word)
 
             vector = self.vector_enc(move)
             score = self.score_enc(torch.tensor([
                 min(move.score,self.score_max - 1)
-            ])).squeeze()
-            enc = word + ordered + vector + score
+            ]).to(device)).squeeze()
+            enc = word + ordered #+ vector + score
             encodings.append(enc)
         return torch.stack(encodings)
 
 class Model(nn.Module):
 
-    def __init__(self, vocab):
+    def __init__(self, vocab, move_max=10):
         super(Model, self).__init__()
 
         self.move_emb_size = 100
         self.hidden_sz = 100
+        self.move_max = move_max
 
         self.network = nn.Sequential(
-            MoveEncoder(vocab, self.move_emb_size),
+            MoveEncoder(vocab, self.move_emb_size, self.move_max),
             nn.LeakyReLU(),
             SelfAttention(self.move_emb_size, self.hidden_sz),
             nn.LeakyReLU(),
@@ -130,12 +136,15 @@ class Model(nn.Module):
         return (-probabilities.log() * disc_rewards).sum()
 
 def discount(rewards, discount_factor=.99):
+    rewards = np.array(rewards)
+    rewards = np.tanh(rewards / 100)
+    
     prev = 0
     discounted_rewards = np.copy(rewards).astype(np.float32)
     for i in range(1, len(discounted_rewards) + 1):
         discounted_rewards[-i] += prev * discount_factor
         prev = discounted_rewards[-i]
-    return torch.tensor(discounted_rewards)
+    return torch.tensor(discounted_rewards).to(device)
 
 def generate_trajectory(model):
     states = []
@@ -147,11 +156,11 @@ def generate_trajectory(model):
     state = game.reset()
     done = False
     while not done:
-        possible = game.actions()
+        possible = game.actions()[-model.move_max:]
         if len(possible) > 0:
             states.append(state)
 
-            probs = model(states,[possible])[0].detach().numpy()
+            probs = model(states,[possible])[0].detach().cpu().numpy()
             a_idx = np.random.choice(len(probs),p=probs)
             action = possible[a_idx]
 
@@ -159,20 +168,21 @@ def generate_trajectory(model):
 
             possibles.append(possible)
             a_indices.append(a_idx)
-            rewards.append(np.tanh(reward))
+            rewards.append(reward)
         else:
             _, _, done = game.step(None)
+    
 
     return states,possibles,a_indices,rewards
 
 def train(model):
     outcome = []
-    for i in range(training_iterations):
+    for i in tqdm.tqdm(range(training_iterations)):
         model.eval()
         states, possibles, actions, rewards = generate_trajectory(model)
-        outcome += [rewards[-1] > 0]
+        outcome += [rewards[-1] > 0.]
         disc_rewards = discount(rewards)
-
+        """
         model.train()
         policy = model(states,possibles)
         loss = model.loss(policy,actions,disc_rewards)
@@ -180,10 +190,11 @@ def train(model):
         model.optimizer.zero_grad()
         loss.backward()
         model.optimizer.step()
-        print(f'Win Rate {np.mean(outcome[-10:])}')
+        """
+        print(f'{i+1}: Reward {rewards[-1]}')
 
 def main():
-    model = Model(get_vocab())
+    model = Model(get_vocab(),2).to(device)
     model.optimizer = torch.optim.Adam(model.parameters(), lr = 1e-4, eps = 1e-4)
 
     train(model)

@@ -56,7 +56,7 @@ class Player:
         self.score = 0
 
     def __str__(self):
-        return f'Player {self.id},\tScore {self.score}\tTiles {self.tiles}'
+        return f'Player {self.id},\tScore {self.score},\tTiles {self.tiles}'
 
     def __hash__(self):
         return self.id
@@ -715,14 +715,12 @@ class Game:
 
         self.board = Board()
         self.players = [Player(i) for i in range(num_players)]
-        for player in self.players:
-            self.board.fill_tiles(player)
 
     def __str__(self):
 
-        string = 'Main Player: Player 0\n'
+        string = 'Main Player: Player 0'
         for player in self.players:
-            string += str(player) + "\n"
+            string += "\n\t" + str(player)
         return string
 
     class State():
@@ -743,8 +741,17 @@ class Game:
 
         states = [self.state()]
 
-        actor = np.random.choice(len(self.players))
-        for player in self.players[:-actor]:
+        starter = np.random.choice(len(self.players))
+        # Give each player one tile at a time
+        for i in range(7):
+            for player in self.players[starter:]+self.players[:starter]:
+                tile = self.board.draw_tile()
+                player.add_tile(tile)
+        
+        if starter == 0:
+            return states
+        
+        for player in self.players[starter:]:
             self.play_auto(player)
             states.append(self.state())
 
@@ -792,14 +799,16 @@ class Game:
         moves = self.board.get_all_moves(player.tiles)
         if len(moves) == 0:
             return False
-
         move = player.pick_move(moves)
 
         self.board.play_move(move)
         player.score += move.score
 
+        curr = sum(list(self.board.amount.values()))
+
         self.board.remove_tiles(player,move)
         self.board.fill_tiles(player)
+
         return True
 
 def get_vocab():
