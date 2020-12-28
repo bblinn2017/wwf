@@ -714,43 +714,43 @@ class Board:
         multi_groups = self.get_board_tile_groups()
 
         # board empty, different protocol
-        manager = Manager()
-        args_queue = manager.list()
-        args_lock = manager.Lock()
-        results_queue = manager.list()
-        results_lock = manager.Lock()
-        moves = manager.list()
-        moves_lock = manager.Lock()
+        with Manager() as manager:
+            args_queue = manager.list()
+            args_lock = manager.Lock()
+            results_queue = manager.list()
+            results_lock = manager.Lock()
+            moves = manager.list()
+            moves_lock = manager.Lock()
 
-        if len(multi_groups) == 0:
-            for c in combos:
-                args = (c,[])
-                func = self.get_empty_matches
-                args_queue.append((func,args))
-        # board not empty, find all matches in dictionary
-        else:
-            for mg in multi_groups:
+            if len(multi_groups) == 0:
                 for c in combos:
-                    args = (c,mg,[])
-                    func = self.get_regular_matches
+                    args = (c,[])
+                    func = self.get_empty_matches
                     args_queue.append((func,args))
+            # board not empty, find all matches in dictionary
+            else:
+                for mg in multi_groups:
+                    for c in combos:
+                        args = (c,mg,[])
+                        func = self.get_regular_matches
+                        args_queue.append((func,args))
 
-                    # get sideways matches
-                    func = self.get_sideways_matches
-                    args_queue.append((func,args))
+                        # get sideways matches
+                        func = self.get_sideways_matches
+                        args_queue.append((func,args))
 
-        processes = []
-        for i in range(NUM_PROCESSES):
-            process = MoveProcess(
-                args_queue,args_lock,results_queue,results_lock,
-                moves,moves_lock,self.get_valid_moves
-            )
-            processes.append(process)
+            processes = []
+            for i in range(NUM_PROCESSES):
+                process = MoveProcess(
+                    args_queue,args_lock,results_queue,results_lock,
+                    moves,moves_lock,self.get_valid_moves
+                )
+                processes.append(process)
 
-        for thread in processes:
-            process.start()
-        for thread in processes:
-            process.join()
+            for process in processes:
+                process.start()
+            for thread in processes:
+                process.join()
 
         return sorted(set(moves))
         """
