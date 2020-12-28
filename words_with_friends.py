@@ -4,7 +4,7 @@ import os
 from itertools import combinations, combinations_with_replacement
 import re
 import copy
-import threading
+from multiprocessing import Process, Manager
 
 np.random.seed(seed=0)
 
@@ -51,7 +51,7 @@ LAYOUT = {
         [8,12],[11,0],[11,7],[11,14],
         [12,6],[12,8],[14,3],[14,11]],
 }
-NUM_THREADS = 10
+NUM_PROCESSES = 5
 
 class Player:
     def __init__(self,id):
@@ -79,7 +79,7 @@ class Player:
     def pick_move(self,moves):
         return moves[-1]
 
-class MoveThread(threading.Thread):
+class MoveProcess(Process):
 
     def __init__(self,q,q_lock,r,r_lock,m,m_lock,move_func):
         super(MoveThread,self).__init__()
@@ -712,14 +712,15 @@ class Board:
 
         # get all possible multi groups on the board
         multi_groups = self.get_board_tile_groups()
-        """
+
         # board empty, different protocol
-        args_queue = []
-        args_lock = threading.Lock()
-        results_queue = []
-        results_lock = threading.Lock()
-        moves = []
-        moves_lock = threading.Lock()
+        manager = Manager()
+        args_queue = manager.list()
+        args_lock = manager.Lock()
+        results_queue = manager.list()
+        results_lock = manager.Lock()
+        moves = manager.list()
+        moves_lock = manager.Lock()
 
         if len(multi_groups) == 0:
             for c in combos:
@@ -738,18 +739,18 @@ class Board:
                     func = self.get_sideways_matches
                     args_queue.append((func,args))
 
-        threads = []
-        for i in range(NUM_THREADS):
-            thread = MoveThread(
+        processes = []
+        for i in range(NUM_PROCESSES):
+            process = MoveProcess(
                 args_queue,args_lock,results_queue,results_lock,
                 moves,moves_lock,self.get_valid_moves
             )
-            threads.append(thread)
+            processes.append(process)
 
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        for thread in processes:
+            process.start()
+        for thread in processes:
+            process.join()
 
         return sorted(set(moves))
         """
@@ -773,7 +774,7 @@ class Board:
             moves += self.get_valid_moves(match)
 
         return sorted(set(moves))
-
+        """
     # Game playing logic
     def play_move(self,move):
         row = move.row
