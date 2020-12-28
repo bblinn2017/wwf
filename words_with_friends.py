@@ -82,7 +82,7 @@ class Player:
 class MoveProcess(Process):
 
     def __init__(self,q,q_lock,r,r_lock,m,m_lock,move_func):
-        super(MoveThread,self).__init__()
+        super(MoveProcess,self).__init__()
         self.queue = q
         self.queue_lock = q_lock
 
