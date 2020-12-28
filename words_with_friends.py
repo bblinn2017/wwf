@@ -4,6 +4,7 @@ import os
 from itertools import combinations, combinations_with_replacement
 import re
 import copy
+import threading
 
 ROW = 0
 COLUMN = 1
@@ -74,6 +75,29 @@ class Player:
 
     def pick_move(self,moves):
         return moves[-1]
+
+class OperationThread(threading.Thread):
+
+    def __init__(self,**kwargs):
+        super(OperationThread,self).__init__()
+        self.func = kwargs['func']
+        self.queue = kwargs['queue']
+        self.queue_lock = kwargs['queue_lock']
+        self.results = kwargs['results']
+        self.results_lock = kwargs['results_lock']
+
+    def run(self):
+
+        while self.queue.qsize() > 0:
+            self.queue_lock.acquire()
+            args = self.queue.get()
+            self.queue_lock.release()
+
+            res = self.func(args)
+
+            self.results_lock.acquire()
+            self.results.put(res)
+            self.results_lock.release()
 
 class Board:
     def __init__(self):
@@ -247,29 +271,26 @@ class Board:
                 star_matches += self.get_empty_matches(tiles_wo_star,list(item))
             return star_matches
 
+        if len(tiles) == 1:
+            return []
+
+        sort_string = ''.join(sorted(tiles))
+        if sort_string not in self.dictionary:
+            return []
+
+        matched_words = self.dictionary[sort_string]
+
+        string = SPACE * len(sort_string)
         matches = []
-        if len(self.get_tile_combinations(tiles+star)) == 0:
-            raise Exception("yoion")
-        for c in self.get_tile_combinations(tiles+star):
-            if len(c) == 1:
-                continue
-
-            sort_string = ''.join(sorted(c))
-            if sort_string not in self.dictionary:
-                continue
-
-            matched_words = self.dictionary[sort_string]
-
-            string = SPACE * len(sort_string)
-            for word in matched_words:
-                for i in range(len(word)):
-                    start = 7 - (len(word) - 1) + i
-                    matches.append(self.Match(
-                        word,string,tiles,star,r=start,c=7,dir=COLUMN
-                    ))
-                    matches.append(self.Match(
-                        word,string,tiles,star,r=7,c=start,dir=ROW
-                    ))
+        for word in matched_words:
+            for i in range(len(word)):
+                start = 7 - (len(word) - 1) + i
+                matches.append(self.Match(
+                    word,string,tiles,star,r=start,c=7,dir=COLUMN
+                ))
+                matches.append(self.Match(
+                    word,string,tiles,star,r=7,c=start,dir=ROW
+                ))
 
         return matches
 
@@ -651,11 +672,12 @@ class Board:
         multi_groups = self.get_board_tile_groups()
 
         # board empty, different protocol
+        matches = []
         if len(multi_groups) == 0:
-            matches = self.get_empty_matches(player_tiles)
+            for c in combos:
+                matches += self.get_empty_matches(c)
         # board not empty, find all matches in dictionary
         else:
-            matches = []
             for mg in multi_groups:
                 for c in combos:
                     matches += self.get_matches(c,mg)
@@ -747,10 +769,10 @@ class Game:
             for player in self.players[starter:]+self.players[:starter]:
                 tile = self.board.draw_tile()
                 player.add_tile(tile)
-        
+
         if starter == 0:
             return states
-        
+
         for player in self.players[starter:]:
             self.play_auto(player)
             states.append(self.state())
