@@ -5,6 +5,7 @@ from itertools import combinations, combinations_with_replacement
 import re
 import copy
 from multiprocessing import Process, Manager
+import random
 
 ROW = 0
 COLUMN = 1
@@ -100,12 +101,13 @@ class MoveProcess(Process):
                 self.moves.append(move)
 
 class Board:
-    def __init__(self):
+    def __init__(self,random=None):
         self.make_board()
         self.make_dictionary()
         self.make_tiles()
         self.stars = []
         self.game_continue = True
+        self.random = random if random != None else random.Random()
 
     def __str__(self):
 
@@ -769,7 +771,7 @@ class Board:
         count = list(self.amount.values())
         p = np.array(count) / np.sum(count)
 
-        idx = np.random.choice(len(keys),p=p)
+        idx = self.random.choices(range(len(keys)),weights=p)[0]
         self.amount[keys[idx]] -= 1
 
         return keys[idx]
@@ -785,10 +787,11 @@ class Board:
 
 class Game:
 
-    def __init__(self,num_players=2):
+    def __init__(self,num_players=2,seed=None):
 
-        self.board = Board()
         self.players = [Player(i) for i in range(num_players)]
+        self.random = random.Random(seed)
+        self.board = Board(self.random)
 
     def __str__(self):
 
@@ -815,7 +818,7 @@ class Game:
 
         states = [self.state()]
 
-        starter = np.random.choice(len(self.players))
+        starter = self.random.randrange(len(self.players))
         # Give each player one tile at a time
         for i in range(7):
             for player in self.players[starter:]+self.players[:starter]:
@@ -831,24 +834,65 @@ class Game:
 
         return states
 
-    def actions(self):
+    def actions(self,move_max):
 
         possible_moves = self.board.get_all_moves(self.players[0].tiles)
+        return possible_moves[-move_max:]
 
-        return possible_moves
+    class Reward_Info:
 
-    def reward(self):
+        def __init__(self,
+                     moves,
+                     move_idx,
+                     prev_player_scores,
+                     curr_player_scores):
+            self.scores = np.array([m.score for m in moves]) \
+                if moves != None else None
+            self.idx = move_idx
+            self.prev = prev_player_scores
+            self.curr = curr_player_scores
 
-        return min([self.players[0].score - p.score for p in self.players[1:]])
+        def main_player_winning(self):
+            return np.argmax(self.curr) == 0
 
-    def step(self,move = None):
+        def get_reward(self,game_won,win_factor=0.1):
+            move_score = self.scores[self.idx]
+            other_move_score = 0
+            for i in range(len(self.scores)):
+                if self.scores[i] > other_move_score and i != self.idx:
+                    other_move_score = self.scores[i]
+            move_value = move_score - other_move_score
+
+            prev_score = self.prev[0] - max(self.prev[1:])
+            curr_score = self.curr[0] - max(self.curr[1:])
+            diff_value = (curr_score - prev_score) / 5.
+            curr_value = curr_score / 10.
+
+            # if game won, encourage and don't penalize heavily       
+            if game_won:
+                func = max
+            else:
+                func = min
+
+            move_value = func(win_factor * move_value, move_value)
+            diff_value = func(win_factor * diff_value, diff_value)
+            curr_value = func(win_factor * curr_value, curr_value)
+
+            return float(move_value + diff_value + curr_value)
+
+    def player_scores(self): return np.array([p.score for p in self.players])
+            
+    def step(self,moves,move_idx):
 
         count_played = 0
         states = [self.state()]
+        prev_player_scores = self.player_scores()
 
         # Player 0 makes move
-        played = move != None
+        played = move_idx != None
         if played:
+            move = moves[move_idx]
+            
             self.board.play_move(move)
             self.players[0].score += move.score
 
@@ -863,7 +907,10 @@ class Game:
 
             count_played += 1 if played else 0
 
-        reward = self.reward()
+        curr_player_scores = self.player_scores()
+        reward_args = (moves,move_idx,prev_player_scores,curr_player_scores)
+        reward = self.Reward_Info(*reward_args)
+
         done = count_played == 0
 
         return states, reward, done
