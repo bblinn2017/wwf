@@ -7,148 +7,13 @@ import tqdm
 import matplotlib.pyplot as plt
 import copy
 
-device= torch.device("cuda")
-
-class SelfAttention(nn.Module):
-
-    def __init__(self, in_sz, out_sz, use_mask = False):
-        super(SelfAttention, self).__init__()
-
-        self.in_sz = in_sz
-        self.out_sz = out_sz
-        self.use_mask = use_mask
-
-        self.Q = nn.Linear(self.in_sz,self.out_sz)
-        self.K = nn.Linear(self.in_sz,self.out_sz)
-        self.V = nn.Linear(self.in_sz,self.out_sz)
-
-    def forward(self, input):
-
-        queries = self.Q(input)
-        keys = self.K(input)
-        values = self.V(input)
-
-        raw = queries @ keys.T
-        if self.use_mask:
-            ninf = np.ones(raw.shape) * np.NINF
-            tril = torch.tensor(np.triu(ninf,1)).to(device)
-        scores = F.softmax(raw, dim = -1)
-        return scores @ values
-
-class WordEncoder(nn.Module):
-
-    def __init__(self, length, vocab, in_sz):
-        super(WordEncoder, self).__init__()
-
-        self.length = length
-        self.in_sz = in_sz
-        self.vocab = vocab
-        self.vocab_sz = len(vocab)
-
-        self.letter_emb = nn.Embedding(self.vocab_sz,self.in_sz)
-        self.positional = nn.Embedding(self.length,self.in_sz)
-        self.word_SA = SelfAttention(self.in_sz, self.in_sz)
-
-    def forward(self, input):
-
-        tokenized = torch.tensor([self.vocab[x] for x in input]).to(device)
-        emb = self.letter_emb(tokenized)
-        positions = torch.tensor(np.arange(len(input))).to(device)
-        emb_w_pos = emb + self.positional(positions)
-        attn = self.word_SA(emb_w_pos).sum(dim = 0)
-        return attn.tanh()
-
-class VectorEncoder(nn.Module):
-
-    def __init__(self, length, in_sz):
-        super(VectorEncoder, self).__init__()
-
-        self.row_emb = nn.Embedding(length,in_sz)
-        self.col_emb = nn.Embedding(length,in_sz)
-        self.dir_emb = nn.Embedding(2,in_sz)
-
-    def forward(self,move):
-
-        row = self.row_emb(torch.tensor([move.row]).to(device)).squeeze()
-        col = self.col_emb(torch.tensor([move.column]).to(device)).squeeze()
-        dir = self.dir_emb(torch.tensor([move.dir]).to(device)).squeeze()
-
-        enc = row + col + dir
-        return enc.tanh()
-    
-class MoveEncoder(nn.Module):
-
-    def __init__(self, vocab, out_sz, word_max = 15):
-        super(MoveEncoder, self).__init__()
-
-        self.word_enc_sz = self.hidden_sz
-        self.vector_enc_sz = self.hidden_sz
-        concat_sz = self.word_enc_sz * 2 + self.vector_enc_sz
-
-        self.word_max = word_max
-
-        self.word_enc = WordEncoder(self.word_max, vocab, self.word_enc_sz)
-        self.vector_enc = VectorEncoder(self.word_max, self.vector_enc_sz)
-        self.score_enc = nn.Linear(1,concat_sz)
-
-        hdn0 = 200
-        hdn1 = 150
-        
-        self.encoder = Sequential(
-            nn.Linear(concat_sz,hdn0),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hdn0,hdn1),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hdn1,out_sz)
-        )
-
-        self.encoder_mu = nn.Linear(out_sz,out_sz)
-        self.encoder_log_var = nn.Linear(out_sz,out_sz)
-
-    def forward(self,moves):
-        # Encode move
-        moves_enc = []
-        scores = []
-        for move in moves:
-            word = self.word_enc(move.word)
-            ordered = self.word_enc(move.word)
-            vector = self.vector_enc(move)
-            
-            move_enc = torch.cat((word,ordered,vector),dim=-1)
-            moves_enc.append(move_enc)
-            scores.append(move.score)
-        moves_enc = torch.stack(moves_enc)
-        
-        # Add score bias   
-        normalized = torch.tensor(scores).to(device).float().view(-1,1)
-        normalized -= normalized.min()
-        if normalized.max() != 0:
-            normalized /= normalized.max()
-        scores_enc = self.score_enc(normalized)
-        moves_enc = move_enc + scores_enc
-
-        # Variational AE
-        enc = self.encoder(moves_enc)
-        enc_mu = self.encoder_mu(enc)
-        enc_log_var = self.encoder_log_var(enc)
-
-        epsilon = torch.rand(enc_mu.shape)
-        return enc_mu + (enc_log_var / 2).exp() * epsilon
-
-class MoveDecoder(nn.Module):
-
-    def __init__(self, vocab, out_sz):
-        super(MoveDecoder, self).__init__()
-    
 class BoardEncoder(nn.Module):
 
     def __init__(self,vocab, out_sz):
         super(BoardEncoder, self).__init__()
 
         self.hidden_sz = 50
-        
+
         self.vocab = vocab
         self.vocab_sz = len(vocab)
 
@@ -171,10 +36,10 @@ class BoardEncoder(nn.Module):
                 tokenized[i,j] = self.vocab[input.board[i,j]]
         tokenized = tokenized
         board_emb = self.letter_emb(tokenized).permute(2,0,1).unsqueeze(0)
-        
+
         board_enc = self.board_enc(board_emb)
         return board_enc
-    
+
 class StateEncoder(nn.Module):
 
     def __init__(self, vocab, out_sz, move_max):
@@ -197,7 +62,7 @@ class StateEncoder(nn.Module):
         states_embs = torch.stack(states_embs)
         states_attn = self.states_attn(states_embs)[-1]
         return states_attn
-    
+
 class Model(nn.Module):
 
     def __init__(self, vocab, move_max=10):
@@ -212,7 +77,7 @@ class Model(nn.Module):
             MoveEncoder(vocab, self.move_emb_sz),
             nn.GroupNorm(1,self.move_emb_sz)
         )
-        #self.state_encoder = StateEncoder(vocab,self.state_emb_sz,self.move_max) 
+        #self.state_encoder = StateEncoder(vocab,self.state_emb_sz,self.move_max)
         self.network = nn.Sequential(
             #SelfAttention(self.move_emb_sz, self.move_emb_sz),
             nn.LeakyReLU(),
@@ -220,6 +85,8 @@ class Model(nn.Module):
             nn.Flatten(0),
             nn.Softmax(dim = -1)
         )
+
+        self.optimizer = torch.optim.Adam(self.parameters(), lr = 5e-4, eps = 1e-4)
 
     def forward(self,states,possibles):
 
@@ -238,14 +105,6 @@ class Model(nn.Module):
 
         return (-probabilities.log() * disc_rewards).sum()
 
-class AutoEncoder(nn.Module):
-
-    def __init__(self, vocab):
-
-        self.move_emb_sz = 100
-        self.move_encoder = MoveEncoder(vocab, self.move_emb_sz)
-        self.move_decoder = MoveDecoder(vocab, self.move_emb_sz)
-    
 def discount(rewards_info, discount_factor = .6):
     game_won = rewards_info[-1].main_player_winning()
 
@@ -283,13 +142,13 @@ def generate_trajectory(model):
             continue
 
         states.append(state)
-        
-        probs = model([state],[possible])[0].detach().cpu().numpy()    
+
+        probs = model([state],[possible])[0].detach().cpu().numpy()
         a_idx = np.random.choice(len(possible),p=probs)
         avg_prob += probs[a_idx]
-        
+
         state, reward, done = game.step(possible,a_idx)
-        
+
         possibles.append(possible)
         a_indices.append(a_idx)
         rewards.append(reward)
@@ -342,7 +201,7 @@ def test(model,seed=None):
 
             state, reward, done = game.step(possible, a_idx)
             rewards.append(reward)
-            
+
             p_scores = [p.score for p in game.players]
             m_scores = [m.score for m in possible]
             print(np.round(probs,3),"\t",m_scores,"\t",p_scores)
@@ -352,14 +211,14 @@ def test(model,seed=None):
         if i ==	max_recursion:
             break
     discount(rewards)
-    
+
     scores = [p.score for p in game.players]
     return scores[0] - max(scores[1:])
 
 def train(model):
     states, possibles, actions, rewards, diff = generate_trajectory(model)
     disc_rewards = discount(rewards)
-    
+
     model.train()
     policy = model(states,possibles)
     loss = model.loss(policy,actions,disc_rewards)
@@ -376,9 +235,8 @@ def main():
     max_moves = 2
     global max_games
     max_games = 5
-    
+
     model = Model(get_vocab(),max_moves).to(device)
-    model.optimizer = torch.optim.Adam(model.parameters(), lr = 5e-4, eps = 1e-4)
     """
     all_possible = all_possibilities(seed=2)
     print(all_possible)
@@ -392,15 +250,15 @@ def main():
     training_iterations = 200
     testing_iterations = 10
     iter_test = 10
-    
+
     for i in tqdm.tqdm(range(training_iterations)):
         train(model)
-        
+
         #sc = test(model)
         #print(sc)
         #output.append(sc)
     torch.save(model,"model.pt")
-        
+
     #model = torch.load("model.pt")
     print(test(model,2))
     #for i in range(max_games):
